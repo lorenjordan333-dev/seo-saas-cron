@@ -1,0 +1,12 @@
+{
+  "name": "seo-saas-cron",
+  "version": "1.0.0",
+  "main": "seo-cron.js",
+  "scripts": {
+    "start": "node seo-cron.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.20.0",
+    "node-fetch": "^2.7.0"
+  }
+}
