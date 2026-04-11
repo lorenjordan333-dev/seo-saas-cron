@@ -1,5 +1,4 @@
 const Anthropic = require("@anthropic-ai/sdk");
-const fetch = require("node-fetch");
 const http = require("http");
 
 const anthropic = new Anthropic({
