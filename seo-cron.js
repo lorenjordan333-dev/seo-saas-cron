@@ -136,7 +136,6 @@ async function processClient(client) {
   const unusedKeywords = client.keywords || [];
 
   if (unusedKeywords.length === 0) {
-    // No keywords — use opportunities from scan data
     const opportunities = client.opportunities || [];
     if (opportunities.length === 0) {
       console.log(`No keywords or opportunities for client ${client.id} — skipping`);
@@ -152,7 +151,6 @@ async function processClient(client) {
     return;
   }
 
-  // Normal flow — use keywords table
   const keywordObj = unusedKeywords[0];
   const keyword = keywordObj.keyword;
   const areaUrl = keywordObj.area_url || client.website_url;
@@ -231,6 +229,10 @@ const server = http.createServer(async (req, res) => {
         } catch (_) {}
       }
     });
+  } else if (req.method === "POST" && req.url === "/run-all") {
+    res.writeHead(200);
+    res.end(JSON.stringify({ success: true, message: "Running all clients" }));
+    runAll().catch(err => console.error("runAll error:", err.message));
   } else {
     res.writeHead(404);
     res.end("Not found");
@@ -240,7 +242,4 @@ const server = http.createServer(async (req, res) => {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`🌐 HTTP server listening on port ${PORT}`);
-  runAll().catch(err => {
-    console.error("❌ Fatal error:", err.message);
-  });
 });
