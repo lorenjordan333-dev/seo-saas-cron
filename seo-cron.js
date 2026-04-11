@@ -6,7 +6,6 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-// SaaS Supabase (multi-client database)
 const SAAS_SUPABASE_URL = "https://dgrvojmeztdkoorljwrk.supabase.co";
 const SAAS_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRncnZvam1lenRka29vcmxqd3JrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4MzE1MzYsImV4cCI6MjA5MTQwNzUzNn0.Gs32Z4cOEJsxiDARRIZs2i9SAQ-LunnECXmrt9F46ZE";
 
@@ -60,7 +59,7 @@ async function publishPost(post) {
 }
 
 async function generateArticle(client, keyword, areaUrl) {
-  console.log(`Generating article for ${client.name} - keyword: "${keyword}"`);
+  console.log(`Generating article for ${client.name || client.id} - keyword: "${keyword}"`);
 
   const prompt = `You are an expert SEO content writer specializing in local businesses.
 
@@ -132,27 +131,37 @@ META_DESCRIPTION: [max 155 chars, include keyword and location]`;
 }
 
 async function processClient(client) {
-  console.log(`\n--- Processing: ${client.name} (${client.business_type} in ${client.location}) ---`);
+  console.log(`\n--- Processing: ${client.id} (${client.business_type} in ${client.location}) ---`);
 
   const unusedKeywords = client.keywords || [];
 
   if (unusedKeywords.length === 0) {
-    console.log(`No unused keywords for ${client.name} — skipping`);
+    // No keywords — use opportunities from scan data
+    const opportunities = client.opportunities || [];
+    if (opportunities.length === 0) {
+      console.log(`No keywords or opportunities for client ${client.id} — skipping`);
+      return;
+    }
+    const toGenerate = opportunities.slice(0, 3);
+    for (const keyword of toGenerate) {
+      console.log(`Generating from opportunity: "${keyword}"`);
+      const article = await generateArticle(client, keyword, client.website_url);
+      await publishPost(article);
+      console.log(`Published: ${article.title}`);
+    }
     return;
   }
 
+  // Normal flow — use keywords table
   const keywordObj = unusedKeywords[0];
   const keyword = keywordObj.keyword;
   const areaUrl = keywordObj.area_url || client.website_url;
 
   console.log(`Keyword: ${keyword}`);
-
   const article = await generateArticle(client, keyword, areaUrl);
   console.log(`Article generated: ${article.title}`);
-
   await publishPost(article);
-  console.log(`Published successfully for ${client.name}`);
-
+  console.log(`Published successfully for ${client.name || client.id}`);
   await markKeywordUsed(keywordObj.id);
   console.log(`Keyword marked as used`);
 }
@@ -172,15 +181,24 @@ async function runAll() {
     try {
       await processClient(client);
     } catch (err) {
-      console.error(`Error processing ${client.name}:`, err.message);
+      console.error(`Error processing ${client.name || client.id}:`, err.message);
     }
   }
 
   console.log("\n✅ All clients processed!");
 }
 
-// HTTP server — handles /run-client for immediate first-run trigger
 const server = http.createServer(async (req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
   if (req.method === "POST" && req.url === "/run-client") {
     let body = "";
     req.on("data", chunk => body += chunk);
@@ -193,12 +211,12 @@ const server = http.createServer(async (req, res) => {
         const client = clients.find(c => c.id === client_id);
 
         if (!client) {
+          console.log(`Client not found: ${client_id}`);
           res.writeHead(404);
           res.end(JSON.stringify({ error: "Client not found" }));
           return;
         }
 
-        // Run in background, respond immediately
         res.writeHead(200);
         res.end(JSON.stringify({ success: true, message: "Generation started" }));
 
@@ -207,8 +225,10 @@ const server = http.createServer(async (req, res) => {
 
       } catch (err) {
         console.error("Error in /run-client:", err.message);
-        res.writeHead(500);
-        res.end(JSON.stringify({ error: err.message }));
+        try {
+          res.writeHead(500);
+          res.end(JSON.stringify({ error: err.message }));
+        } catch (_) {}
       }
     });
   } else {
@@ -220,7 +240,6 @@ const server = http.createServer(async (req, res) => {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`🌐 HTTP server listening on port ${PORT}`);
-  // Run the daily cron immediately on startup
   runAll().catch(err => {
     console.error("❌ Fatal error:", err.message);
   });
