@@ -6,7 +6,6 @@
     "start": "node seo-cron.js"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.20.0",
-    "node-fetch": "^2.7.0"
+    "@anthropic-ai/sdk": "^0.20.0"
   }
 }
