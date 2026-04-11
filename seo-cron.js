@@ -17,8 +17,22 @@ function generateSlug(title) {
     .trim() + "-" + Date.now();
 }
 
+async function fetchWithTimeout(url, options, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(timeout);
+    return response;
+  } catch (err) {
+    clearTimeout(timeout);
+    throw err;
+  }
+}
+
 async function getAllClients() {
-  const response = await fetch(`${SAAS_SUPABASE_URL}/functions/v1/get-all-clients`, {
+  console.log("Fetching clients from Supabase...");
+  const response = await fetchWithTimeout(`${SAAS_SUPABASE_URL}/functions/v1/get-all-clients`, {
     method: "GET",
     headers: {
       "Content-Type": "application/json",
@@ -31,7 +45,7 @@ async function getAllClients() {
 }
 
 async function markKeywordUsed(keywordId) {
-  const response = await fetch(`${SAAS_SUPABASE_URL}/functions/v1/mark-keyword-used`, {
+  const response = await fetchWithTimeout(`${SAAS_SUPABASE_URL}/functions/v1/mark-keyword-used`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -44,7 +58,7 @@ async function markKeywordUsed(keywordId) {
 }
 
 async function publishPost(post) {
-  const response = await fetch(`${SAAS_SUPABASE_URL}/functions/v1/publish-post`, {
+  const response = await fetchWithTimeout(`${SAAS_SUPABASE_URL}/functions/v1/publish-post`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
