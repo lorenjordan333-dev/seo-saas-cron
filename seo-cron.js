@@ -1,5 +1,6 @@
 const Anthropic = require("@anthropic-ai/sdk");
 const fetch = require("node-fetch");
+const http = require("http");
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -140,34 +141,30 @@ async function processClient(client) {
     return;
   }
 
-  // Pick first unused keyword
   const keywordObj = unusedKeywords[0];
   const keyword = keywordObj.keyword;
   const areaUrl = keywordObj.area_url || client.website_url;
 
   console.log(`Keyword: ${keyword}`);
 
-  // Generate article
   const article = await generateArticle(client, keyword, areaUrl);
   console.log(`Article generated: ${article.title}`);
 
-  // Publish to blog_posts table
   await publishPost(article);
   console.log(`Published successfully for ${client.name}`);
 
-  // Mark keyword as used
   await markKeywordUsed(keywordObj.id);
   console.log(`Keyword marked as used`);
 }
 
-async function run() {
+async function runAll() {
   console.log("🚀 SEO SaaS Cron Job starting -", new Date().toISOString());
 
   const clients = await getAllClients();
   console.log(`Total active clients: ${clients.length}`);
 
   if (clients.length === 0) {
-    console.log("No active clients yet. Waiting for first signup.");
+    console.log("No active clients yet.");
     return;
   }
 
@@ -182,7 +179,49 @@ async function run() {
   console.log("\n✅ All clients processed!");
 }
 
-run().catch((err) => {
-  console.error("❌ Fatal error:", err.message);
-  process.exit(1);
+// HTTP server — handles /run-client for immediate first-run trigger
+const server = http.createServer(async (req, res) => {
+  if (req.method === "POST" && req.url === "/run-client") {
+    let body = "";
+    req.on("data", chunk => body += chunk);
+    req.on("end", async () => {
+      try {
+        const { client_id } = JSON.parse(body);
+        console.log(`\n⚡ Manual trigger for client_id: ${client_id}`);
+
+        const clients = await getAllClients();
+        const client = clients.find(c => c.id === client_id);
+
+        if (!client) {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: "Client not found" }));
+          return;
+        }
+
+        // Run in background, respond immediately
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, message: "Generation started" }));
+
+        await processClient(client);
+        console.log(`⚡ First-run complete for client_id: ${client_id}`);
+
+      } catch (err) {
+        console.error("Error in /run-client:", err.message);
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+  } else {
+    res.writeHead(404);
+    res.end("Not found");
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`🌐 HTTP server listening on port ${PORT}`);
+  // Run the daily cron immediately on startup
+  runAll().catch(err => {
+    console.error("❌ Fatal error:", err.message);
+  });
 });
