@@ -67,9 +67,58 @@ async function publishPost(post) {
     body: JSON.stringify(post),
   });
   const data = await response.json();
-  console.log("Post published:", data);
+  console.log("Post published to Supabase:", data);
   return data;
 }
+
+// ─── WordPress Publishing ─────────────────────────────────────────────────────
+
+async function publishToWordPress(wpUrl, wpUsername, wpAppPassword, article) {
+  console.log(`Publishing to WordPress: ${wpUrl}`);
+
+  // Clean up the WordPress URL
+  const baseUrl = wpUrl.replace(/\/$/, "");
+  const apiUrl = `${baseUrl}/wp-json/wp/v2/posts`;
+
+  // Build Basic Auth header from username + application password
+  const credentials = Buffer.from(`${wpUsername}:${wpAppPassword}`).toString("base64");
+
+  const wpPost = {
+    title: article.title,
+    content: article.content,
+    status: "publish",
+    slug: generateSlug(article.title),
+    excerpt: article.meta_description || "",
+    meta: {
+      _yoast_wpseo_title: article.title,
+      _yoast_wpseo_metadesc: article.meta_description || "",
+    },
+  };
+
+  const response = await fetchWithTimeout(
+    apiUrl,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Basic ${credentials}`,
+      },
+      body: JSON.stringify(wpPost),
+    },
+    30000
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`WordPress API error ${response.status}: ${errorText}`);
+  }
+
+  const data = await response.json();
+  console.log(`✅ Published to WordPress: ${data.link}`);
+  return { success: true, url: data.link, wp_post_id: data.id };
+}
+
+// ─── Article Generation ───────────────────────────────────────────────────────
 
 async function generateArticle(client, keyword, areaUrl) {
   console.log(`Generating article for ${client.name || client.id} - keyword: "${keyword}"`);
@@ -143,10 +192,14 @@ META_DESCRIPTION: [max 155 chars, include keyword and location]`;
   };
 }
 
+// ─── Process Client ───────────────────────────────────────────────────────────
+
 async function processClient(client) {
   console.log(`\n--- Processing: ${client.id} (${client.business_type} in ${client.location}) ---`);
 
   const unusedKeywords = client.keywords || [];
+
+  let article = null;
 
   if (unusedKeywords.length === 0) {
     const opportunities = client.opportunities || [];
@@ -157,8 +210,18 @@ async function processClient(client) {
     const toGenerate = opportunities.slice(0, 3);
     for (const keyword of toGenerate) {
       console.log(`Generating from opportunity: "${keyword}"`);
-      const article = await generateArticle(client, keyword, client.website_url);
+      article = await generateArticle(client, keyword, client.website_url);
       await publishPost(article);
+
+      // Publish to WordPress if connected
+      if (client.wp_url && client.wp_username && client.wp_app_password) {
+        try {
+          await publishToWordPress(client.wp_url, client.wp_username, client.wp_app_password, article);
+        } catch (wpErr) {
+          console.error(`WordPress publish failed for ${client.id}:`, wpErr.message);
+        }
+      }
+
       console.log(`Published: ${article.title}`);
     }
     return;
@@ -169,13 +232,25 @@ async function processClient(client) {
   const areaUrl = keywordObj.area_url || client.website_url;
 
   console.log(`Keyword: ${keyword}`);
-  const article = await generateArticle(client, keyword, areaUrl);
+  article = await generateArticle(client, keyword, areaUrl);
   console.log(`Article generated: ${article.title}`);
   await publishPost(article);
+
+  // Publish to WordPress if connected
+  if (client.wp_url && client.wp_username && client.wp_app_password) {
+    try {
+      await publishToWordPress(client.wp_url, client.wp_username, client.wp_app_password, article);
+    } catch (wpErr) {
+      console.error(`WordPress publish failed for ${client.id}:`, wpErr.message);
+    }
+  }
+
   console.log(`Published successfully for ${client.name || client.id}`);
   await markKeywordUsed(keywordObj.id);
   console.log(`Keyword marked as used`);
 }
+
+// ─── Run All ──────────────────────────────────────────────────────────────────
 
 async function runAll() {
   console.log("🚀 SEO SaaS Cron Job starting -", new Date().toISOString());
@@ -199,6 +274,8 @@ async function runAll() {
   console.log("\n✅ All clients processed!");
 }
 
+// ─── HTTP Server ──────────────────────────────────────────────────────────────
+
 const server = http.createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -210,6 +287,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── /run-client ──────────────────────────────────────────────────────────────
   if (req.method === "POST" && req.url === "/run-client") {
     let body = "";
     req.on("data", chunk => body += chunk);
@@ -242,10 +320,94 @@ const server = http.createServer(async (req, res) => {
         } catch (_) {}
       }
     });
+
+  // ── /run-all ─────────────────────────────────────────────────────────────────
   } else if (req.method === "POST" && req.url === "/run-all") {
     res.writeHead(200);
     res.end(JSON.stringify({ success: true, message: "Running all clients" }));
     runAll().catch(err => console.error("runAll error:", err.message));
+
+  // ── /publish-to-wordpress ────────────────────────────────────────────────────
+  } else if (req.method === "POST" && req.url === "/publish-to-wordpress") {
+    let body = "";
+    req.on("data", chunk => body += chunk);
+    req.on("end", async () => {
+      try {
+        const { wp_url, wp_username, wp_app_password, article } = JSON.parse(body);
+
+        if (!wp_url || !wp_username || !wp_app_password || !article) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: "Missing required fields: wp_url, wp_username, wp_app_password, article" }));
+          return;
+        }
+
+        console.log(`\n📤 Manual WordPress publish to: ${wp_url}`);
+        const result = await publishToWordPress(wp_url, wp_username, wp_app_password, article);
+
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, ...result }));
+
+      } catch (err) {
+        console.error("Error in /publish-to-wordpress:", err.message);
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+
+  // ── /test-wordpress ──────────────────────────────────────────────────────────
+  } else if (req.method === "POST" && req.url === "/test-wordpress") {
+    let body = "";
+    req.on("data", chunk => body += chunk);
+    req.on("end", async () => {
+      try {
+        const { wp_url, wp_username, wp_app_password } = JSON.parse(body);
+
+        if (!wp_url || !wp_username || !wp_app_password) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: "Missing required fields: wp_url, wp_username, wp_app_password" }));
+          return;
+        }
+
+        const baseUrl = wp_url.replace(/\/$/, "");
+        const credentials = Buffer.from(`${wp_username}:${wp_app_password}`).toString("base64");
+
+        // Test the connection by fetching the WordPress site info
+        const testResponse = await fetchWithTimeout(
+          `${baseUrl}/wp-json/wp/v2/users/me`,
+          {
+            method: "GET",
+            headers: {
+              "Authorization": `Basic ${credentials}`,
+            },
+          },
+          10000
+        );
+
+        if (!testResponse.ok) {
+          const errorText = await testResponse.text();
+          res.writeHead(400);
+          res.end(JSON.stringify({ success: false, error: `Connection failed: ${testResponse.status} - ${errorText}` }));
+          return;
+        }
+
+        const userData = await testResponse.json();
+        console.log(`✅ WordPress connection verified for: ${userData.name}`);
+
+        res.writeHead(200);
+        res.end(JSON.stringify({
+          success: true,
+          message: "WordPress connected successfully",
+          wp_user: userData.name,
+          wp_url: baseUrl,
+        }));
+
+      } catch (err) {
+        console.error("Error in /test-wordpress:", err.message);
+        res.writeHead(500);
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+
   } else {
     res.writeHead(404);
     res.end("Not found");
