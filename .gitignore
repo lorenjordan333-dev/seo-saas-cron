@@ -1,0 +1,5 @@
+node_modules/
+*.json.tmp
+posts_tmp.json
+fr_posts.json
+.claude/
