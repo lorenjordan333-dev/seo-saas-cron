@@ -30,6 +30,43 @@ async function fetchWithTimeout(url, options, timeoutMs = 10000) {
   }
 }
 
+// ─── Domain Validation ────────────────────────────────────────────────────────
+
+function isSameDomain(url1, url2) {
+  try {
+    const h1 = new URL(url1).hostname.replace(/^www\./, "");
+    const h2 = new URL(url2).hostname.replace(/^www\./, "");
+    return h1 === h2;
+  } catch {
+    return false;
+  }
+}
+
+// ─── Language Detection & Translations ───────────────────────────────────────
+
+const LANG_LOCATION_HINTS = {
+  fr: ["paris", "lyon", "marseille", "toulouse", "nice", "nantes", "strasbourg",
+       "montpellier", "bordeaux", "lille", "rennes", "reims", "grenoble", "france"],
+};
+
+const TRANSLATIONS = {
+  fr: { contactUs: "contactez-nous", inWord: "à" },
+  en: { contactUs: "contact us",     inWord: "in" },
+};
+
+function detectLanguage(client, keyword) {
+  // 1. Explicit language field on client (most reliable)
+  if (client.language) return client.language.toLowerCase().slice(0, 2);
+
+  // 2. Detect from location then keyword
+  const haystack = `${client.location || ""} ${keyword || ""}`.toLowerCase();
+  for (const [lang, hints] of Object.entries(LANG_LOCATION_HINTS)) {
+    if (hints.some(h => haystack.includes(h))) return lang;
+  }
+
+  return "en";
+}
+
 async function getAllClients() {
   console.log("Fetching clients from Supabase...");
   const response = await fetchWithTimeout(`${SAAS_SUPABASE_URL}/functions/v1/get-all-clients`, {
@@ -123,6 +160,10 @@ async function publishToWordPress(wpUrl, wpUsername, wpAppPassword, article) {
 async function generateArticle(client, keyword, areaUrl) {
   console.log(`Generating article for ${client.name || client.id} - keyword: "${keyword}"`);
 
+  const lang = detectLanguage(client, keyword);
+  const t = TRANSLATIONS[lang] || TRANSLATIONS.en;
+  console.log(`Detected language: ${lang}`);
+
   const prompt = `You are an expert SEO content writer specializing in local businesses.
 
 Write a high-ranking, conversion-optimized SEO article for a ${client.business_type} business located in ${client.location}, targeting this keyword: "${keyword}"
@@ -135,11 +176,12 @@ RULES:
 - Start directly with an <h1> tag
 - Output clean HTML only
 - Write content relevant to ${client.business_type} business specifically
+- Write the entire article in the same language as the keyword and location
 
 INTERNAL LINKS — include these naturally:
 - Keyword link: <a href="${areaUrl}">${keyword}</a>
-- Website link: <a href="${client.website_url}">${client.business_type} in ${client.location}</a>
-- Contact link: <a href="${client.website_url}/contact">contact us</a>
+- Website link: <a href="${client.website_url}">${client.business_type} ${t.inWord} ${client.location}</a>
+- Contact link: <a href="${client.website_url}/contact">${t.contactUs}</a>
 
 ARTICLE STRUCTURE (MANDATORY):
 1. H1 title — include keyword + strong intent
@@ -229,7 +271,13 @@ async function processClient(client) {
 
   const keywordObj = unusedKeywords[0];
   const keyword = keywordObj.keyword;
-  const areaUrl = keywordObj.area_url || client.website_url;
+  const rawAreaUrl = keywordObj.area_url;
+  const areaUrl = (rawAreaUrl && isSameDomain(rawAreaUrl, client.website_url))
+    ? rawAreaUrl
+    : client.website_url;
+  if (rawAreaUrl && !isSameDomain(rawAreaUrl, client.website_url)) {
+    console.warn(`area_url "${rawAreaUrl}" does not match client domain — falling back to ${client.website_url}`);
+  }
 
   console.log(`Keyword: ${keyword}`);
   article = await generateArticle(client, keyword, areaUrl);
