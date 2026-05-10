@@ -67,6 +67,18 @@ function detectLanguage(client, keyword) {
   return "en";
 }
 
+// Detect French from the keyword text alone — used to prevent English clients
+// from generating English duplicates of French-language keywords.
+function isKeywordFrench(keyword) {
+  if (!keyword) return false;
+  const kw = keyword.toLowerCase();
+  // French accented characters are a definitive signal
+  if (/[àâäéèêëîïôùûüç]/.test(kw)) return true;
+  // French locksmith/garage-door domain terms
+  const frenchTerms = ["serrurier", "serrurerie", "porte de garage", "déverrouillage", "clé"];
+  return frenchTerms.some(t => kw.includes(t));
+}
+
 async function getAllClients() {
   console.log("Fetching clients from Supabase...");
   const response = await fetchWithTimeout(`${SAAS_SUPABASE_URL}/functions/v1/get-all-clients`, {
@@ -251,6 +263,11 @@ async function processClient(client) {
     }
     const toGenerate = opportunities.slice(0, 3);
     for (const keyword of toGenerate) {
+      // Guard: skip French opportunities for non-French clients
+      if (isKeywordFrench(keyword) && detectLanguage(client, keyword) !== "fr") {
+        console.log(`Skipping French opportunity "${keyword}" for non-French client ${client.id}`);
+        continue;
+      }
       console.log(`Generating from opportunity: "${keyword}"`);
       article = await generateArticle(client, keyword, client.website_url);
       await publishPost(article);
@@ -271,6 +288,15 @@ async function processClient(client) {
 
   const keywordObj = unusedKeywords[0];
   const keyword = keywordObj.keyword;
+
+  // Guard: never generate an English article for a French keyword.
+  // The French client will handle it; mark as used so this client doesn't retry.
+  if (isKeywordFrench(keyword) && detectLanguage(client, keyword) !== "fr") {
+    console.log(`Skipping French keyword "${keyword}" for non-French client ${client.id}`);
+    await markKeywordUsed(keywordObj.id);
+    return;
+  }
+
   const rawAreaUrl = keywordObj.area_url;
   const areaUrl = (rawAreaUrl && isSameDomain(rawAreaUrl, client.website_url))
     ? rawAreaUrl
